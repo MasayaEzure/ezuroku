@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>家族会議レポート プロトタイプ</title>
+<title>えづ録 - 家族会議レポート</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
   .log-line { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
@@ -12,28 +12,9 @@
 <body class="bg-gray-50 text-gray-900 min-h-screen">
   <div class="max-w-3xl mx-auto p-4 space-y-6">
     <header class="py-4 border-b">
-      <h1 class="text-2xl font-bold">家族会議レポート プロトタイプ</h1>
-      <p class="text-sm text-gray-500">Step1: ローカル検証用（APIキーはブラウザ入力）</p>
+      <h1 class="text-2xl font-bold">えづ録</h1>
+      <p class="text-sm text-gray-500">家族会議レポート自動化ツール</p>
     </header>
-
-    <!-- APIキー入力 -->
-    <section class="bg-white rounded-lg shadow p-4 space-y-3">
-      <h2 class="font-semibold">APIキー</h2>
-      <div>
-        <label class="block text-sm mb-1" for="openaiKey">OpenAI API Key</label>
-        <input id="openaiKey" type="password" autocomplete="off"
-               class="w-full border rounded px-3 py-2 text-sm" placeholder="sk-..." />
-      </div>
-      <div>
-        <label class="block text-sm mb-1" for="anthropicKey">Anthropic API Key</label>
-        <input id="anthropicKey" type="password" autocomplete="off"
-               class="w-full border rounded px-3 py-2 text-sm" placeholder="sk-ant-..." />
-      </div>
-      <label class="flex items-center gap-2 text-sm">
-        <input id="saveKeys" type="checkbox" />
-        localStorageに保存する（このブラウザのみ）
-      </label>
-    </section>
 
     <!-- 録音 -->
     <section class="bg-white rounded-lg shadow p-4 space-y-3">
@@ -103,9 +84,6 @@ const state = {
 };
 
 const el = {
-  openaiKey: document.getElementById('openaiKey'),
-  anthropicKey: document.getElementById('anthropicKey'),
-  saveKeys: document.getElementById('saveKeys'),
   recordBtn: document.getElementById('recordBtn'),
   elapsed: document.getElementById('elapsed'),
   recordingMime: document.getElementById('recordingMime'),
@@ -116,34 +94,6 @@ const el = {
   audioPlayer: document.getElementById('audioPlayer'),
   downloadLink: document.getElementById('downloadLink'),
 };
-
-// ---------------------------------------------------
-// APIキー管理（localStorage）
-// ---------------------------------------------------
-const LS_KEYS = { openai: 'ftr_openai_key', anthropic: 'ftr_anthropic_key', save: 'ftr_save_keys' };
-
-function loadKeys() {
-  const save = localStorage.getItem(LS_KEYS.save) === '1';
-  el.saveKeys.checked = save;
-  if (save) {
-    el.openaiKey.value = localStorage.getItem(LS_KEYS.openai) || '';
-    el.anthropicKey.value = localStorage.getItem(LS_KEYS.anthropic) || '';
-  }
-}
-function persistKeys() {
-  if (el.saveKeys.checked) {
-    localStorage.setItem(LS_KEYS.save, '1');
-    localStorage.setItem(LS_KEYS.openai, el.openaiKey.value);
-    localStorage.setItem(LS_KEYS.anthropic, el.anthropicKey.value);
-  } else {
-    localStorage.removeItem(LS_KEYS.save);
-    localStorage.removeItem(LS_KEYS.openai);
-    localStorage.removeItem(LS_KEYS.anthropic);
-  }
-}
-el.saveKeys.addEventListener('change', persistKeys);
-el.openaiKey.addEventListener('input', persistKeys);
-el.anthropicKey.addEventListener('input', persistKeys);
 
 // ---------------------------------------------------
 // ログ
@@ -191,11 +141,6 @@ function fmtElapsed(ms) {
 }
 
 async function startRecording() {
-  if (!el.openaiKey.value.trim() || !el.anthropicKey.value.trim()) {
-    alert('OpenAIとAnthropicのAPIキーを両方入力してください。');
-    return;
-  }
-
   try {
     state.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
@@ -280,162 +225,50 @@ el.recordBtn.addEventListener('click', () => {
 });
 
 // ---------------------------------------------------
-// Whisper API
+// 文字起こし（Netlify Functions 経由で Whisper を呼ぶ）
 // ---------------------------------------------------
 async function transcribeWithWhisper(blob, mime) {
   log('文字起こし開始（Whisper）');
   const form = new FormData();
   const filename = 'recording.' + extFromMime(mime);
   form.append('file', blob, filename);
-  form.append('model', 'whisper-1');
-  form.append('language', 'ja');
 
-  const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+  const res = await fetch('/.netlify/functions/transcribe', {
     method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + el.openaiKey.value.trim() },
     body: form,
   });
 
   const bodyText = await res.text();
   if (!res.ok) {
-    throw new Error('Whisper API エラー (HTTP ' + res.status + '): ' + bodyText);
+    throw new Error('文字起こし失敗 (HTTP ' + res.status + '): ' + bodyText);
   }
   let data;
   try { data = JSON.parse(bodyText); }
-  catch (e) { throw new Error('Whisperレスポンスの解析失敗: ' + bodyText); }
+  catch (e) { throw new Error('文字起こしレスポンスの解析失敗: ' + bodyText); }
 
   log('文字起こし完了', 'ok');
   return data.text || '';
 }
 
 // ---------------------------------------------------
-// Claude API
+// 構造化（Netlify Functions 経由で Claude を呼ぶ）
 // ---------------------------------------------------
-const SYSTEM_PROMPT = `あなたは家族会議の議事録を作成するアシスタントです。
-入力された会議の文字起こしから、指定された形式のJSONオブジェクトのみを出力してください。
-前置き、説明、コードブロック（\`\`\`）は一切不要です。JSONオブジェクトのみを返してください。
-
-# 家族の構成
-
-- えづ（パパ）
-- さり（ママ）
-
-# 出力形式
-
-{
-  "summary": "会議全体の要約",
-  "decisions": ["決定事項1", "決定事項2"],
-  "tasks": [
-    { "task": "やること", "assignee": "担当者 or \\"不明\\"", "deadline": "期限 or \\"不明\\"" }
-  ]
-}
-
-# 要約（summary）
-
-- 2〜3文で、話題と結論を時系列で簡潔にまとめる
-- 「今回何を話したか」を思い出すためのメモとして書く
-- 結論が出ていない話題は含めなくて良い
-
-# 決定事項（decisions）
-
-次に該当するものを拾う：
-- 方針、ルール、継続的に適用される決め事
-- 家族全体に関わる大きな決め事（買い物、計画、制度変更など）
-- 担当者が明確でない確定事項
-
-例：
-- 「今月から食費の上限を5万円にする」
-- 「保育園は来年4月から認可に変更する」
-- 「平日の食器洗いは交代でやる」
-
-# タスク（tasks）
-
-次に該当するものを拾う：
-- 担当者が明確な「誰かがやること」
-- 会議中に確定したもののみ（提案・未決・検討中は拾わない）
-
-各タスクの項目：
-- task: やることの内容を簡潔に
-- assignee: 担当者。"えづ" / "さり" / "両方" / "不明" のいずれか
-  - "不明" は「確定したタスクだが、話者識別ができず担当者を特定できない」場合のみ使う
-  - 未確定・検討中のものは "不明" にせず、そもそも拾わない
-- deadline: 期限。発言された表現をそのまま入れる（例：「土曜まで」「今週中」「明日」）。
-  期限への言及がなければ "不明"
-
-例：
-- { "task": "保育園の書類を提出する", "assignee": "えづ", "deadline": "金曜まで" }
-- { "task": "食材の買い出し", "assignee": "さり", "deadline": "不明" }
-- { "task": "美容院の予約を取る", "assignee": "不明", "deadline": "今週中" }
-
-# 確定/未確定の判定基準（重要）
-
-確定と判断する例（拾う）：
-- 「〇〇はえづがやるね」「了解」
-- 「じゃあ来月から変えよう」「いいよ」
-- 「これは私がやっておく」（同意や反対意見なく流れた場合）
-
-未確定と判断する例（拾わない）：
-- 「〇〇どうする？」（問いかけのまま終わった）
-- 「〇〇やった方がいいかな」（合意に至っていない）
-- 「そのうちやろう」（具体性・合意が弱い）
-- 「検討しよう」「考えておく」
-
-迷ったら拾わない。見落としは許容する。
-
-# 担当者の判定
-
-- 「えづがやる」「さりお願い」→ 名前そのまま
-- 「一緒にやる」「2人で」「交代で」→ "両方"
-- 「私がやる」「自分がやるよ」など一人称で、文脈から誰が言ったか判断できない場合
-  → タスクは拾う。assignee は "不明" にする
-- 担当が明確でない確定事項 → tasksではなくdecisionsに入れる
-
-"両方" と "不明" の使い分け：
-- "両方" = 明示的に2人で・交代でやる、と決まった場合
-- "不明" = 担当者は決まっているはずだが、文字起こしからは特定できない場合
-
-# 拾わないもの
-
-以下は無視する：
-- 感情表現や愚痴（「疲れた」「大変だよね」「最近忙しい」など）
-- 過去の出来事の振り返りで、今後の決定・行動に関係ないもの
-- 短い相槌や雑談（「うん」「そうだね」「あ、そういえば」など）
-- 提案・未決・検討中のもの
-
-# 出力のルール
-
-- JSONとして妥当な形式で返す
-- 該当項目がない場合、decisions や tasks は空配列 [] にする
-- 文字起こしに誤認識があっても、文脈から妥当に解釈できる範囲で処理する
-- 解釈が困難な箇所は無理に拾わず、拾える確実なものだけを出力する`;
-
 async function structureWithClaude(transcript) {
   log('構造化開始（Claude）');
-  const body = {
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 1500,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: transcript }],
-  };
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const res = await fetch('/.netlify/functions/generate-report', {
     method: 'POST',
-    headers: {
-      'x-api-key': el.anthropicKey.value.trim(),
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify(body),
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ transcript }),
   });
 
   const bodyText = await res.text();
   if (!res.ok) {
-    throw new Error('Claude API エラー (HTTP ' + res.status + '): ' + bodyText);
+    throw new Error('レポート生成失敗 (HTTP ' + res.status + '): ' + bodyText);
   }
   let data;
   try { data = JSON.parse(bodyText); }
-  catch (e) { throw new Error('Claudeレスポンスの解析失敗: ' + bodyText); }
+  catch (e) { throw new Error('レポート生成レスポンスの解析失敗: ' + bodyText); }
 
   const raw = data?.content?.[0]?.text ?? '';
   el.claudeRaw.textContent = raw;
@@ -558,10 +391,6 @@ async function runPipeline(blob, mime) {
   }
 }
 
-// ---------------------------------------------------
-// 初期化
-// ---------------------------------------------------
-loadKeys();
 </script>
 </body>
 </html>

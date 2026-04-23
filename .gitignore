@@ -1,0 +1,12 @@
+# 依存パッケージ
+node_modules/
+
+# 環境変数（Netlifyダッシュボードで管理）
+.env
+.env.*
+
+# OS
+.DS_Store
+
+# Netlifyローカル
+.netlify/

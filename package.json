@@ -1,0 +1,9 @@
+{
+  "name": "ezuroku",
+  "version": "0.2.0",
+  "private": true,
+  "description": "えづ録 - 家族会議レポート自動化ツール",
+  "dependencies": {
+    "busboy": "^1.6.0"
+  }
+}
