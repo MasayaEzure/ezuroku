@@ -10,3 +10,6 @@ node_modules/
 
 # Netlifyローカル
 .netlify/
+
+# ステップ別手順書
+docs/step*-instructions.md
